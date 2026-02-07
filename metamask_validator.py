@@ -128,16 +128,57 @@ def _display_details(details: ValidationDetails) -> None:
     print(", ".join(str(index) for index in details.indices))
 
 
+def _prompt_word_count() -> int:
+    count_raw = _prompt_input("Cantidad de palabras (12/15/18/21/24): ")
+    try:
+        return int(count_raw)
+    except ValueError as exc:
+        raise ValidationError("Cantidad inválida. Usa 12/15/18/21/24.") from exc
+
+
+def _prompt_quantity() -> int:
+    quantity_raw = _prompt_input("¿Cuántas frases quieres generar?: ")
+    try:
+        quantity = int(quantity_raw)
+    except ValueError as exc:
+        raise ValidationError("La cantidad debe ser un número entero.") from exc
+    if quantity <= 0:
+        raise ValidationError("La cantidad debe ser mayor que cero.")
+    return quantity
+
+
+def _generate_and_validate(wordlist: List[str]) -> None:
+    try:
+        quantity = _prompt_quantity()
+        word_count = _prompt_word_count()
+    except ValidationError as exc:
+        print(f"❌ {exc}")
+        return
+
+    for index in range(1, quantity + 1):
+        try:
+            phrase = generate_phrase(word_count, wordlist)
+            validate_phrase(phrase, wordlist)
+        except ValidationError as exc:
+            print(f"❌ Error en frase {index}: {exc}")
+            continue
+        print(f"\n✅ Frase {index} (válida):")
+        print(phrase)
+
+
 def run_menu(wordlist: List[str]) -> int:
     while True:
         print("\n=== Menú MetaMask (BIP-39) ===")
-        print("1) Validar una frase")
-        print("2) Generar una frase nueva")
-        print("3) Validar y mostrar detalles")
-        print("4) Salir")
-        choice = _prompt_input("Selecciona una opción (1-4): ")
+        print("1) Generar y validar en lote")
+        print("2) Validar una frase")
+        print("3) Generar una frase nueva")
+        print("4) Validar y mostrar detalles")
+        print("5) Salir")
+        choice = _prompt_input("Selecciona una opción (1-5): ")
 
         if choice == "1":
+            _generate_and_validate(wordlist)
+        elif choice == "2":
             phrase = _prompt_input("Ingresa la frase semilla: ")
             try:
                 validate_phrase(phrase, wordlist)
@@ -145,17 +186,16 @@ def run_menu(wordlist: List[str]) -> int:
                 print(f"❌ {exc}")
                 continue
             print("✅ La frase es válida según BIP-39 (MetaMask).")
-        elif choice == "2":
-            count_raw = _prompt_input("Cantidad de palabras (12/15/18/21/24): ")
+        elif choice == "3":
             try:
-                count = int(count_raw)
+                count = _prompt_word_count()
                 phrase = generate_phrase(count, wordlist)
-            except (ValueError, ValidationError) as exc:
+            except ValidationError as exc:
                 print(f"❌ {exc}")
                 continue
             print("✅ Frase generada (BIP-39):")
             print(phrase)
-        elif choice == "3":
+        elif choice == "4":
             phrase = _prompt_input("Ingresa la frase semilla: ")
             try:
                 details = validate_phrase(phrase, wordlist)
@@ -164,7 +204,7 @@ def run_menu(wordlist: List[str]) -> int:
                 continue
             print("✅ La frase es válida según BIP-39 (MetaMask).")
             _display_details(details)
-        elif choice == "4":
+        elif choice == "5":
             return 0
         else:
             print("❌ Opción inválida. Intenta de nuevo.")
@@ -200,7 +240,7 @@ def main() -> int:
     try:
         wordlist = load_wordlist()
 
-        if args.menu:
+        if args.menu or (not args.generate and not args.phrase and not args.details):
             return run_menu(wordlist)
 
         if args.generate:
