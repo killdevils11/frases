@@ -1,267 +1,179 @@
 #!/usr/bin/env python3
-"""Validate or generate a MetaMask (BIP-39) seed phrase."""
+"""
+BIP-39 Offline Tool (English wordlist)
+
+Features:
+- Generate valid 12- or 24-word BIP-39 mnemonics (with checksum)
+- Generate multiple phrases
+- Auto-save to a .txt file (one phrase per line)
+- Validate a mnemonic (words + checksum)
+
+SECURITY NOTES:
+- Run offline (disconnect internet) if you're going to use this for anything serious.
+- Never share your mnemonic/seed phrase with anyone.
+- For real funds, prefer generating inside a trusted wallet (e.g., MetaMask / hardware wallet).
+"""
+
 from __future__ import annotations
-
-import argparse
+import secrets
 import hashlib
-import os
-import sys
-from dataclasses import dataclass
-from typing import List
+from pathlib import Path
 
-WORDLIST_FILE = os.path.join(os.path.dirname(__file__), "wordlist_english.txt")
-
-ALLOWED_WORD_COUNTS = {12: 128, 15: 160, 18: 192, 21: 224, 24: 256}
+WORDLIST_FILENAME = "english.txt"
 
 
-class ValidationError(Exception):
-    pass
-
-
-@dataclass(frozen=True)
-class ValidationDetails:
-    words: List[str]
-    indices: List[int]
-    entropy_bits_len: int
-    checksum_bits_len: int
-
-
-def load_wordlist() -> List[str]:
-    if not os.path.exists(WORDLIST_FILE):
-        raise ValidationError(f"No se encontró el archivo de wordlist: {WORDLIST_FILE}")
-    with open(WORDLIST_FILE, "r", encoding="utf-8") as handle:
-        words = [line.strip() for line in handle if line.strip()]
+def load_wordlist(path: str | Path = WORDLIST_FILENAME) -> list[str]:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Wordlist not found: {p}\n"
+            f"Put '{WORDLIST_FILENAME}' in the same folder as this script, or edit WORDLIST_FILENAME."
+        )
+    words = [w.strip() for w in p.read_text(encoding="utf-8").splitlines() if w.strip()]
     if len(words) != 2048:
-        raise ValidationError("La wordlist debe contener 2048 palabras.")
-    if len(set(words)) != 2048:
-        raise ValidationError("La wordlist contiene palabras duplicadas.")
+        raise ValueError(f"Wordlist must have 2048 words, found {len(words)}")
     return words
 
 
-def normalize_phrase(phrase: str) -> List[str]:
-    cleaned = " ".join(phrase.strip().lower().split())
-    if not cleaned:
-        raise ValidationError("La frase no puede estar vacía.")
-    return cleaned.split(" ")
+def _bytes_to_bits(b: bytes) -> str:
+    return "".join(f"{byte:08b}" for byte in b)
 
 
-def _bits_from_indices(indices: List[int]) -> str:
-    return "".join(f"{index:011b}" for index in indices)
+def _bits_to_int(bits: str) -> int:
+    return int(bits, 2)
 
 
-def _bits_to_bytes(bits: str) -> bytes:
-    return int(bits, 2).to_bytes(len(bits) // 8, byteorder="big")
+def _sha256(data: bytes) -> bytes:
+    return hashlib.sha256(data).digest()
 
 
-def _bytes_to_bits(data: bytes) -> str:
-    return "".join(f"{byte:08b}" for byte in data)
+def generate_mnemonic(num_words: int, wordlist: list[str]) -> str:
+    """
+    Generate a VALID BIP-39 mnemonic with checksum.
+    Allowed num_words: 12, 15, 18, 21, 24
+    """
+    if num_words not in (12, 15, 18, 21, 24):
+        raise ValueError("num_words must be one of: 12, 15, 18, 21, 24")
 
+    # Entropy length in bits: 128..256 step 32
+    entropy_bits = {12: 128, 15: 160, 18: 192, 21: 224, 24: 256}[num_words]
+    entropy = secrets.token_bytes(entropy_bits // 8)
 
-def validate_phrase(phrase: str, wordlist: List[str]) -> ValidationDetails:
-    words = normalize_phrase(phrase)
-    if len(words) not in ALLOWED_WORD_COUNTS:
-        raise ValidationError(
-            "La frase debe tener 12, 15, 18, 21 o 24 palabras (BIP-39)."
-        )
+    # Checksum length = ENT/32
+    cs_len = entropy_bits // 32
+    hash_bits = _bytes_to_bits(_sha256(entropy))
+    checksum = hash_bits[:cs_len]
 
-    word_to_index = {word: idx for idx, word in enumerate(wordlist)}
-    try:
-        indices = [word_to_index[word] for word in words]
-    except KeyError as exc:
-        raise ValidationError(f"La palabra '{exc.args[0]}' no existe en la wordlist.")
-
-    bits = _bits_from_indices(indices)
-    total_bits = len(bits)
-    checksum_bits_len = total_bits // 33
-    entropy_bits_len = total_bits - checksum_bits_len
-
-    entropy_bits = bits[:entropy_bits_len]
-    checksum_bits = bits[entropy_bits_len:]
-
-    entropy_bytes = _bits_to_bytes(entropy_bits)
-    digest = hashlib.sha256(entropy_bytes).digest()
-    digest_bits = _bytes_to_bits(digest)
-    expected_checksum = digest_bits[:checksum_bits_len]
-
-    if checksum_bits != expected_checksum:
-        raise ValidationError("El checksum no coincide: la frase no es válida.")
-
-    return ValidationDetails(
-        words=words,
-        indices=indices,
-        entropy_bits_len=entropy_bits_len,
-        checksum_bits_len=checksum_bits_len,
-    )
-
-
-def generate_phrase(word_count: int, wordlist: List[str]) -> str:
-    if word_count not in ALLOWED_WORD_COUNTS:
-        raise ValidationError(
-            "La frase debe tener 12, 15, 18, 21 o 24 palabras (BIP-39)."
-        )
-
-    entropy_bits_len = ALLOWED_WORD_COUNTS[word_count]
-    entropy_bytes_len = entropy_bits_len // 8
-    entropy = os.urandom(entropy_bytes_len)
-    entropy_bits = _bytes_to_bits(entropy)
-
-    checksum_bits_len = entropy_bits_len // 32
-    digest = hashlib.sha256(entropy).digest()
-    checksum_bits = _bytes_to_bits(digest)[:checksum_bits_len]
-
-    combined_bits = entropy_bits + checksum_bits
-    indices = [int(combined_bits[i : i + 11], 2) for i in range(0, len(combined_bits), 11)]
-    words = [wordlist[index] for index in indices]
+    bits = _bytes_to_bits(entropy) + checksum  # total bits = ENT + CS
+    # Split into 11-bit indices
+    indices = [_bits_to_int(bits[i:i+11]) for i in range(0, len(bits), 11)]
+    words = [wordlist[i] for i in indices]
     return " ".join(words)
 
 
-def _prompt_input(message: str) -> str:
-    return input(message).strip()
+def validate_mnemonic(mnemonic: str, wordlist: list[str]) -> tuple[bool, str]:
+    """
+    Validate words exist in list AND checksum is correct.
+    Returns (is_valid, message)
+    """
+    words = [w.strip().lower() for w in mnemonic.split() if w.strip()]
+    if len(words) not in (12, 15, 18, 21, 24):
+        return False, "Invalid length: mnemonic must have 12/15/18/21/24 words."
 
-
-def _display_details(details: ValidationDetails) -> None:
-    print("\nDetalles de validación:")
-    print(f"- Palabras: {len(details.words)}")
-    print(f"- Entropía: {details.entropy_bits_len} bits")
-    print(f"- Checksum: {details.checksum_bits_len} bits")
-    print("- Índices (BIP-39):")
-    print(", ".join(str(index) for index in details.indices))
-
-
-def _prompt_word_count() -> int:
-    count_raw = _prompt_input("Cantidad de palabras (12/15/18/21/24): ")
+    # Check all words exist
     try:
-        return int(count_raw)
-    except ValueError as exc:
-        raise ValidationError("Cantidad inválida. Usa 12/15/18/21/24.") from exc
+        indices = [wordlist.index(w) for w in words]
+    except ValueError as e:
+        bad = str(e).split("'")[1] if "'" in str(e) else "unknown"
+        return False, f"Word not in BIP-39 English list: {bad}"
+
+    # Build bitstring
+    bits = "".join(f"{i:011b}" for i in indices)
+
+    # Split entropy and checksum
+    entropy_bits = {12: 128, 15: 160, 18: 192, 21: 224, 24: 256}[len(words)]
+    cs_len = entropy_bits // 32
+    ent_bits_str = bits[:entropy_bits]
+    cs_bits_str = bits[entropy_bits:entropy_bits + cs_len]
+
+    # Rebuild entropy bytes
+    entropy_bytes = int(ent_bits_str, 2).to_bytes(entropy_bits // 8, byteorder="big")
+    hash_bits = _bytes_to_bits(_sha256(entropy_bytes))
+    expected_cs = hash_bits[:cs_len]
+
+    if cs_bits_str != expected_cs:
+        return False, "Checksum mismatch: mnemonic is NOT valid."
+    return True, "Valid BIP-39 mnemonic (English) ✅"
 
 
-def _prompt_quantity() -> int:
-    quantity_raw = _prompt_input("¿Cuántas frases quieres generar?: ")
-    try:
-        quantity = int(quantity_raw)
-    except ValueError as exc:
-        raise ValidationError("La cantidad debe ser un número entero.") from exc
-    if quantity <= 0:
-        raise ValidationError("La cantidad debe ser mayor que cero.")
-    return quantity
-
-
-def _generate_and_validate(wordlist: List[str]) -> None:
-    try:
-        quantity = _prompt_quantity()
-        word_count = _prompt_word_count()
-    except ValidationError as exc:
-        print(f"❌ {exc}")
-        return
-
-    for index in range(1, quantity + 1):
-        try:
-            phrase = generate_phrase(word_count, wordlist)
-            validate_phrase(phrase, wordlist)
-        except ValidationError as exc:
-            print(f"❌ Error en frase {index}: {exc}")
-            continue
-        print(f"\n✅ Frase {index} (válida):")
-        print(phrase)
-
-
-def run_menu(wordlist: List[str]) -> int:
+def prompt_int(prompt: str, min_v: int, max_v: int) -> int:
     while True:
-        print("\n=== Menú MetaMask (BIP-39) ===")
-        print("1) Generar y validar en lote")
-        print("2) Validar una frase")
-        print("3) Generar una frase nueva")
-        print("4) Validar y mostrar detalles")
-        print("5) Salir")
-        choice = _prompt_input("Selecciona una opción (1-5): ")
-
-        if choice == "1":
-            _generate_and_validate(wordlist)
-        elif choice == "2":
-            phrase = _prompt_input("Ingresa la frase semilla: ")
-            try:
-                validate_phrase(phrase, wordlist)
-            except ValidationError as exc:
-                print(f"❌ {exc}")
-                continue
-            print("✅ La frase es válida según BIP-39 (MetaMask).")
-        elif choice == "3":
-            try:
-                count = _prompt_word_count()
-                phrase = generate_phrase(count, wordlist)
-            except ValidationError as exc:
-                print(f"❌ {exc}")
-                continue
-            print("✅ Frase generada (BIP-39):")
-            print(phrase)
-        elif choice == "4":
-            phrase = _prompt_input("Ingresa la frase semilla: ")
-            try:
-                details = validate_phrase(phrase, wordlist)
-            except ValidationError as exc:
-                print(f"❌ {exc}")
-                continue
-            print("✅ La frase es válida según BIP-39 (MetaMask).")
-            _display_details(details)
-        elif choice == "5":
-            return 0
-        else:
-            print("❌ Opción inválida. Intenta de nuevo.")
+        s = input(prompt).strip()
+        try:
+            v = int(s)
+            if min_v <= v <= max_v:
+                return v
+        except ValueError:
+            pass
+        print(f"Please enter a number between {min_v} and {max_v}.")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Valida o genera una frase semilla de MetaMask (BIP-39)."
-    )
-    parser.add_argument(
-        "phrase",
-        nargs="*",
-        help="Frase semilla entre comillas, por ejemplo: 'abandon ... about'",
-    )
-    parser.add_argument(
-        "--generate",
-        type=int,
-        choices=sorted(ALLOWED_WORD_COUNTS.keys()),
-        help="Genera una frase con N palabras (12/15/18/21/24).",
-    )
-    parser.add_argument(
-        "--menu",
-        action="store_true",
-        help="Abre un menú interactivo para validar o generar frases.",
-    )
-    parser.add_argument(
-        "--details",
-        action="store_true",
-        help="Muestra detalles de validación (entropía, checksum e índices).",
-    )
-    args = parser.parse_args()
+def main():
+    print("=== BIP-39 Offline Tool (English) ===")
+    print("Make sure 'english.txt' is in this folder.\n")
 
     try:
         wordlist = load_wordlist()
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        input("\nPress Enter to exit...")
+        return
 
-        if args.menu or (not args.generate and not args.phrase and not args.details):
-            return run_menu(wordlist)
+    while True:
+        print("\nMenu:")
+        print("1) Generate mnemonic(s) (valid checksum)")
+        print("2) Validate a mnemonic")
+        print("3) Exit")
 
-        if args.generate:
-            phrase = generate_phrase(args.generate, wordlist)
-            print("✅ Frase generada (BIP-39):")
-            print(phrase)
-            return 0
+        choice = input("Choose an option (1-3): ").strip()
 
-        phrase = " ".join(args.phrase).strip()
-        if not phrase:
-            phrase = input("Ingresa la frase semilla: ").strip()
+        if choice == "1":
+            print("\nGenerate mnemonic(s):")
+            print("   1) 12 words")
+            print("   2) 24 words")
+            wchoice = input("Choose (1-2): ").strip()
+            num_words = 12 if wchoice == "1" else 24 if wchoice == "2" else None
+            if num_words is None:
+                print("Invalid selection.")
+                continue
 
-        details = validate_phrase(phrase, wordlist)
-        print("✅ La frase es válida según BIP-39 (MetaMask).")
-        if args.details:
-            _display_details(details)
-        return 0
-    except ValidationError as exc:
-        print(f"❌ {exc}")
-        return 1
+            count = prompt_int("How many phrases to generate? (1-1000): ", 1, 1000)
+
+            default_name = f"mnemonics_{num_words}w.txt"
+            out_name = input(f"Output filename (Enter for '{default_name}'): ").strip() or default_name
+            out_path = Path(out_name)
+
+            phrases = [generate_mnemonic(num_words, wordlist) for _ in range(count)]
+
+            # Auto-save
+            out_path.write_text("\n".join(phrases) + "\n", encoding="utf-8")
+
+            print(f"\nSaved {count} phrase(s) to: {out_path.resolve()}")
+            print("First phrase preview:")
+            print(phrases[0])
+
+        elif choice == "2":
+            print("\nPaste the mnemonic to validate (words separated by spaces).")
+            mnemonic = input("> ").strip()
+            ok, msg = validate_mnemonic(mnemonic, wordlist)
+            print(msg)
+
+        elif choice == "3":
+            print("Bye.")
+            break
+        else:
+            print("Invalid option. Choose 1, 2, or 3.")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
